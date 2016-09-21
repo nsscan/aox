@@ -129,7 +129,7 @@ class Column
     : public Garbage
 {
 public:
-    enum Type { Unknown, Boolean, Integer, Bigint, Bytes, Timestamp, Null };
+    enum Type { Unknown, Boolean, Integer, Bigint, Bytes, Timestamp, Null, Uuid };
 
     Type type;
     EString s;
@@ -153,6 +153,7 @@ public:
     bool getBoolean( const char * ) const;
     EString getEString( const char * ) const;
     UString getUString( const char * ) const;
+	EString getUUID( const char * ) const;
     bool hasColumn( const char * ) const;
     Column::Type columnType( const char * ) const;
 

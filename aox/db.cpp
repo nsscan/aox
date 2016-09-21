@@ -754,6 +754,9 @@ static EString rowSummary( class Query * q ) {
         case Column::Timestamp:
             s.append( "(timestamptz)" );
             break;
+		case Column::Uuid:
+			s.append( "(uuid)");
+			break;
         case Column::Null:
             s.append( "null" );
             break;

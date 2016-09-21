@@ -40,6 +40,7 @@ public:
     EString & operator=( const EString & );
     EString & operator=( const char * );
     EString & operator+=( const EString & str ) { append( str ); return *this; }
+	EString & operator+=( const int64 & num ) { appendNumber(num); return *this; }
 
     void operator delete( void * );
 
