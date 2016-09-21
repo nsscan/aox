@@ -33,6 +33,7 @@ protected:
     char decodeByte();
     EString decodeString();
     EString decodeByten( uint );
+	EString decodeUUID(uint);
     void end();
 };
 

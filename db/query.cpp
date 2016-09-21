@@ -861,6 +861,19 @@ int64 Row::getBigint( const char * f ) const
     return c->bi;
 }
 
+/*! Returns the string value of the column named \a f i if it exists
+    and is NOT NULL, and an empty string otherwise.
+*/
+
+EString Row::getUUID( const char * f ) const
+{
+    const Column * c = fetch( f, Column::Uuid, true );
+    if ( !c )
+        return "";
+    if ( c->type != Column::Uuid )
+        return "";
+    return c->s;
+}
 
 /*! Returns the string value of the column named \a f i if it exists
     and is NOT NULL, and an empty string otherwise.
@@ -1015,6 +1028,9 @@ EString Column::typeName( Type type )
     case Timestamp:
         n = "timestamptz";
         break;
+	case Uuid:
+		n = "uuid";
+		break;
     case Null:
         n = "null";
         break;

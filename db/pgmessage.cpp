@@ -8,6 +8,7 @@
 #include "buffer.h"
 #include "query.h"
 
+#include "stdio.h"
 
 static bool haveAskedForCitext;
 static int citextOid;
@@ -187,6 +188,53 @@ EString PgServerMessage::decodeByten( uint x )
     n += x;
 
     return s;
+}
+
+EString PgServerMessage::decodeUUID( uint x ) {
+	EString s = "";
+	
+	if (16 != x) {
+		log("uuid decode should request 16 bytes but instead requested " + x );
+		throw Syntax;
+	}
+	
+	uint32 data1 = ( (*buf)[0] << 24 ) |
+            ( (*buf)[1] << 16 ) |
+            ( (*buf)[2] <<  8 ) |
+            ( (*buf)[3]       );
+    buf->remove( 4 );
+    n += 4;
+	
+	uint32 data2 = ((*buf)[0] << 8) | (*buf)[1];
+	buf->remove( 2 );
+    n += 2;
+	
+	uint32 data3 = ((*buf)[0] << 8) | (*buf)[1];
+	buf->remove( 2 );
+    n += 2;
+	
+	uint32 data4 = ((*buf)[0] << 8) | (*buf)[1];
+	buf->remove( 2 );
+    n += 2;
+	
+	uint32 data5 = ((*buf)[0] << 8) | (*buf)[1];
+	buf->remove( 2 );
+    n += 2;
+	
+	
+	uint32 data6 = ( (*buf)[0] << 24 ) |
+            ( (*buf)[1] << 16 ) |
+            ( (*buf)[2] <<  8 ) |
+            ( (*buf)[3]       );
+    buf->remove( 4 );
+    n += 4;
+	
+	char result[37];
+	sprintf( result, "%08x-%04x-%04x-%04x-%04x%08x", data1, data2, data3, data4, data5, data6);
+	
+	s = result;
+
+	return s;
 }
 
 
@@ -898,6 +946,9 @@ PgDataRow::PgDataRow( Buffer *b, const PgRowDescription *d )
         case 1184:
             cv->type = Column::Timestamp;
             break;
+		case 2950:
+			cv->type = Column::Uuid;
+			break;
         default:
             if ( it->type == ::citextOid ) { // CITEXT
                 cv->type = Column::Bytes;
@@ -978,6 +1029,9 @@ PgDataRow::PgDataRow( Buffer *b, const PgRowDescription *d )
         case Column::Timestamp:
             cv->s = decodeByten( length );
             break;
+		case Column::Uuid:
+			cv->s = decodeUUID( length );
+			break;
         case Column::Null:
             // nothing needed
             break;
