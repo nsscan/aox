@@ -19,16 +19,17 @@ public:
     StatusData() :
         messages( false ), uidnext( false ), uidvalidity( false ),
         recent( false ), unseen( false ),
-        modseq( false ),
+        modseq( false ), x_guid (false),
         mailbox( 0 ),
         unseenCount( 0 ), messageCount( 0 ), recentCount( 0 ),
         cacheState( 0 )
         {}
-    bool messages, uidnext, uidvalidity, recent, unseen, modseq;
+    bool messages, uidnext, uidvalidity, recent, unseen, modseq, x_guid;
     Mailbox * mailbox;
     Query * unseenCount;
     Query * messageCount;
     Query * recentCount;
+	Query * mailbox_x_guid;
     uint cacheState;
 
     class CacheItem
@@ -37,16 +38,19 @@ public:
     public:
         CacheItem():
             hasMessages( false ), hasUnseen( false ), hasRecent( false ),
+			has_x_guid (false),
             messages( 0 ), unseen( 0 ), recent( 0 ),
             nextmodseq( 0 ), mailbox( 0 )
             {}
         bool hasMessages;
         bool hasUnseen;
         bool hasRecent;
+		bool has_x_guid;
         uint messages;
         uint unseen;
         uint recent;
         int64 nextmodseq;
+		EString x_guid;
         Mailbox * mailbox;
     };
 
@@ -73,6 +77,7 @@ public:
                 i->hasMessages = false;
                 i->hasUnseen = false;
                 i->hasRecent = false;
+				i->has_x_guid = false;
             }
             return i;
         }
@@ -154,6 +159,8 @@ void Status::parse()
             d->unseen = true;
         else if ( item == "highestmodseq" )
             d->modseq = true;
+        else if ( "x-guid" == item )
+            d->x_guid = true;
         else
             error( Bad, "Unknown STATUS item: " + item );
 
@@ -189,13 +196,15 @@ void Status::execute()
 
     // second part. see if anything has happened, and feed the cache if
     // so. make sure we feed the cache at once.
-    if ( d->unseenCount || d->recentCount || d->messageCount ) {
+    if ( d->unseenCount || d->recentCount || d->messageCount || d->mailbox_x_guid) {
         if ( d->unseenCount && !d->unseenCount->done() )
             return;
         if ( d->messageCount && !d->messageCount->done() )
             return;
         if ( d->recentCount && !d->recentCount->done() )
             return;
+		if ( d->mailbox_x_guid && !d->mailbox_x_guid->done() )
+			return;
     }
     if ( !::cache )
         ::cache = new StatusData::StatusCache;
@@ -233,7 +242,18 @@ void Status::execute()
             }
         }
     }
-
+    if ( d->mailbox_x_guid ) {
+		// Retrieve Mailbox GUID Value And Place Into Cache Item
+        while ( d->mailbox_x_guid->hasResults() ) {
+            Row * r = d->mailbox_x_guid->nextRow();
+            StatusData::CacheItem * ci =
+                ::cache->find( r->getInt( "mailbox" ) );
+            if ( ci ) {
+                ci->has_x_guid = true;
+                ci->x_guid = r->getEString( "guid" );
+            }
+        }
+    }
     // third part. are we processing the first command in a STATUS
     // loop? if so, see if we ought to preload the cache.
     if ( mailboxGroup() && d->cacheState < 3 ) {
@@ -244,9 +264,9 @@ void Status::execute()
             while ( i ) {
                 StatusData::CacheItem * ci = ::cache->provide( i );
                 bool need = false;
-                if ( d->unseen || d->recent || d->messages )
+                if ( d->unseen || d->recent || d->messages || d->x_guid )
                     need = true;
-                if ( ci->hasUnseen || ci->hasRecent || ci->hasMessages )
+                if ( ci->hasUnseen || ci->hasRecent || ci->hasMessages || ci->has_x_guid )
                     need = false;
                 if ( need )
                     mailboxes.add( i->id() );
@@ -282,6 +302,16 @@ void Status::execute()
                 d->messageCount->bind( 1, mailboxes );
                 d->messageCount->execute();
             }
+			if ( d->x_guid ) {
+				// Run Query To Get Mailbox GUID Value
+                d->mailbox_x_guid
+                    = new Query( "select guid "
+                                 "from mailboxes where id=any($1) "
+                                 , this );
+                d->mailbox_x_guid->bind( 1, mailboxes );
+                d->mailbox_x_guid->execute();
+            }
+			
             d->cacheState = 2;
         }
         if ( d->cacheState == 2 ) {
@@ -296,6 +326,8 @@ void Status::execute()
                     ci->hasRecent = true;
                 if ( ci && d->messageCount )
                     ci->hasMessages = true;
+                if ( ci && d->mailbox_x_guid )
+                    ci->has_x_guid = true;
                 ++i;
             }
             // and drop the queries
@@ -303,6 +335,7 @@ void Status::execute()
             d->unseenCount = 0;
             d->recentCount = 0;
             d->messageCount = 0;
+			d->mailbox_x_guid = NULL;	// Null is surely better than 0?
         }
     }
 
@@ -356,12 +389,25 @@ void Status::execute()
         d->messageCount->execute();
     }
 
-    if ( d->unseenCount || d->recentCount || d->messageCount ) {
+	// Individual guid query ?
+    if ( d->x_guid && !d->mailbox_x_guid && !i->has_x_guid ) {
+        d->mailbox_x_guid
+            = new Query( "select guid "
+						 "from mailboxes where id=$1 "
+                         , this );
+        d->mailbox_x_guid->bind( 1, d->mailbox->id() );
+        d->mailbox_x_guid->execute();
+    }
+
+
+    if ( d->unseenCount || d->recentCount || d->messageCount || d->mailbox_x_guid ) {
         if ( d->unseenCount && !d->unseenCount->done() )
             return;
         if ( d->messageCount && !d->messageCount->done() )
             return;
         if ( d->recentCount && !d->recentCount->done() )
+            return;
+        if ( d->mailbox_x_guid && !d->mailbox_x_guid->done() )
             return;
     }
 
@@ -395,6 +441,9 @@ void Status::execute()
             hms--;
         status.append( "HIGHESTMODSEQ " + fn( hms ) );
     }
+
+    if ( d->x_guid && i->has_x_guid )
+        status.append( "X-GUID " + i->x_guid );
 
     respond( "STATUS " + imapQuoted( d->mailbox ) +
              " (" + status.join( " " ) + ")" );
