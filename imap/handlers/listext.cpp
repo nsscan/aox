@@ -19,19 +19,35 @@ class ListextData
     : public Garbage
 {
 public:
+	class statusInfo : public Garbage {
+	public:
+		uint messages;
+		uint unseen;
+		uint recent;
+		int64 nextmodseq;
+		EString guid;
+		
+		 statusInfo() :
+			messages(0), unseen(0), recent(0), nextmodseq(0) {
+					// Empty
+		}
+	};
+
     ListextData():
-        selectQuery( 0 ), permissionsQuery( 0 ),
-        reference( 0 ),
+        selectQuery( 0 ), permissionsQuery( 0 ), statusQuery( 0 ),
+        reference( 0 ), mailboxStatus (0),
         state( 0 ),
         extended( false ),
         returnSubscribed( false ), returnChildren( false ),
         selectSubscribed( false ), selectRemote( false ),
-        selectRecursiveMatch( false )
+        selectRecursiveMatch( false ), returnStatus( false )
     {}
 
     Query * selectQuery;
     Query * permissionsQuery;
+	Query * statusQuery;
     Mailbox * reference;
+	statusInfo * mailboxStatus;
     EString referenceName;
     UStringList patterns;
     uint state;
@@ -64,12 +80,38 @@ public:
     EString previousResponse;
     List<Response> responses;
 
+	// Status Selection Object
+	class statusSelection : public Garbage {
+		public:
+		bool getRecent;
+		bool getMessages;
+		bool getUidNext;
+		bool getUidValidity;
+		bool getUnseen;
+		bool getHighestModSeq;
+		bool getXGuid;
+		
+
+			statusSelection() :
+			getRecent(false), getMessages(false), getUidNext(false),
+			getUidValidity(false), getUnseen (false), getHighestModSeq (false),
+			getXGuid ( false ) {
+			// Empty Constructor
+		}
+	};
+
+	statusSelection statusRequired;
+	
+
+	
+
     bool extended;
     bool returnSubscribed;
     bool returnChildren;
     bool selectSubscribed;
     bool selectRemote;
     bool selectRecursiveMatch;
+	bool returnStatus;
 };
 
 
@@ -179,7 +221,7 @@ void Listext::execute()
         uint bn = 1;
         EString sel;
         if ( d->selectSubscribed && d->selectRecursiveMatch ) {
-            sel = "select mb.id, mb.name, s.id as sid, "
+            sel = "with q1 as (select mb.id, mb.name, s.id as sid, "
                   "exists(select cmb.id from mailboxes cmb "
                   "join subscriptions cs on"
                   " (cmb.id=cs.mailbox and cs.owner=$1) "
@@ -194,14 +236,14 @@ void Listext::execute()
             bn = 2;
         }
         else if ( d->selectSubscribed ) {
-            sel = "select mb.id, mb.name, s.id as sid from mailboxes mb "
+            sel = "with q1 as (select mb.id, mb.name, s.id as sid from mailboxes mb "
                   "join subscriptions s on (mb.id=s.mailbox and s.owner=$1) "
                   "where ";
             d->selectQuery->bind( 1, imap()->user()->id() );
             bn = 2;
         }
         else {
-            sel = "select mb.id, mb.name";
+            sel = "with q1 as (select mb.id, mb.name";
             if ( d->returnSubscribed ) {
                 sel.append( ", s.id as sid from mailboxes mb "
                             "left join subscriptions s on"
@@ -263,6 +305,17 @@ void Listext::execute()
             ++i;
         }
         sel.append( " order by lower(mb.name)||' '" );
+		
+		// Complete Sub-Query And Add Our Own For Additional Status Info
+		sel.append( "), "
+					"q2 as (select q1.id, mb.guid, uidnext-first_recent as recent from q1 join mailboxes mb using (id)), "
+					"q3 as (select q1.id, count(uid) as unseen from q1 join mailbox_messages mm on (q1.id=mm.mailbox) where not seen group by id), "
+					"q4 as (select q1.id, count(*) as messages from q1 join mailbox_messages mm on (q1.id=mm.mailbox) group by id) ");
+		
+		// Now Return All Of That As A Single Query Compatible With
+		// The makeResponse Call From Before We Added The Status Feature
+		sel.append( "select * from q1 LEFT OUTER JOIN q2 using (id) LEFT OUTER JOIN q3 using (id) LEFT OUTER JOIN q4 using (id)");
+		
         d->selectQuery->setString( sel );
         d->selectQuery->execute();
 
@@ -389,10 +442,46 @@ void Listext::addReturnOption( const EString & option )
         d->returnSubscribed = true;
     else if ( option == "children" )
         d->returnChildren = true;
-    else
+	else if ( "status" == option ) {
+		// Status Return Takes A Number Of Status Attributes We Need To Parse
+        d->returnStatus = true;
+		
+		require(" (");	// Status Must Be Followed By A SPACE Then (
+		
+		addStatusItem(atom().lower());	// First Status Item Is Mandatory
+		while ( present( " " ) )
+            addStatusItem( atom().lower() );	// Handle Any Further Items
+			
+		require(")");	// To Complete Status, A Closing Bracket Is Mandatory
+		
+    } else
         error( Bad, "Unknown return option: " + option );
 }
 
+void Listext::addStatusItem( const EString & statusSelected ) {
+	if ("x-guid" == statusSelected) {
+		// X-GUID
+		d->statusRequired.getXGuid = true;
+	} else if ("messages" == statusSelected) {
+		d->statusRequired.getMessages = true;
+	} else if ("recent" == statusSelected) {
+		d->statusRequired.getRecent = true;
+	} else if ("uidnext" == statusSelected) {
+		d->statusRequired.getUidNext = true;
+	} else if ("uidvalidity" == statusSelected) {
+		d->statusRequired.getUidValidity = true;
+	} else if ("unseen" == statusSelected) {
+		d->statusRequired.getUnseen = true;
+	} else if ("highestmodseq" == statusSelected) {
+		d->statusRequired.getHighestModSeq = true;
+	} else {
+		// Nothing Valid Left - May Just Be We Don't Handle It Rather Than
+		// The RFC Stating It Is Illegal/Invalid.  We Log It So, If Debug Is
+		// Active, There Will Be A Record Of This Happening To Help
+		// Track It Down.
+		error( Bad, "Unknown status item: " + statusSelected );
+	}
+}
 
 /*! Parses the selection \a option, or emits a suitable error. \a
     option must be lower-cased. */
@@ -450,6 +539,68 @@ void Listext::makeResponse( Row * row )
         return;
 
     EString name = imapQuoted( mailbox );
+
+	// Need To Append Any Extended Attributes Status ?
+	if (d->returnStatus) {
+		// yes - add them to ext
+		ext.append(" (");
+		EString preAppend = "";
+
+		if (d->statusRequired.getXGuid && row->hasColumn("guid") && !row->isNull("guid")) {
+			// We want the guid and the column exists and is not null, so it is good to retrieve
+			EString guid = row->getUUID("guid");
+			ext.append(preAppend + "X-GUID " + guid);
+			log("retrieved guid as " + guid);
+			preAppend = " ";
+		}
+
+		if (d->statusRequired.getRecent && row->hasColumn("recent") && !row->isNull("recent")) {
+			int recent = row->getInt("recent");
+			ext.append(preAppend + "RECENT ");
+			ext.appendNumber(recent);
+ 			preAppend = " ";
+		}
+	
+		if (d->statusRequired.getUnseen && row->hasColumn("unseen") && !row->isNull("unseen")) {
+			int unseen = row->getInt("unseen");
+			ext.append(preAppend + "UNSEEN ");
+			ext.appendNumber(unseen);
+ 			preAppend = " ";
+		}
+
+		if (d->statusRequired.getMessages && row->hasColumn("messages") && !row->isNull("messages")) {
+			int messages = row->getInt("messages");
+			ext.append(preAppend + "MESSAGES ");
+			ext.appendNumber(messages);
+ 			preAppend = " ";
+		}
+		
+		if (d->statusRequired.getUidNext) {
+			int uidnext = mailbox->uidnext();
+			ext.append(preAppend + "UIDNEXT ");
+			ext.appendNumber(uidnext);
+ 			preAppend = " ";
+		}		
+		
+		if (d->statusRequired.getUidValidity) {
+			int uidvalidity = mailbox->uidvalidity();
+			ext.append(preAppend + "UIDVALIDITY ");
+			ext.appendNumber(uidvalidity);
+ 			preAppend = " ";
+		}
+		
+		if (d->statusRequired.getHighestModSeq) {
+			int64 highest = mailbox->nextModSeq();
+			if (highest > 1)
+				highest--;
+				
+			ext.append(preAppend + "HIGHESTMODSEQ ");
+			ext.appendNumber(highest);
+ 			preAppend = " ";
+		}
+		
+		ext.append(")");
+	}
 
     EString r = "LIST (" + a.join( " " ) + ") \"/\" " + name + ext;
 

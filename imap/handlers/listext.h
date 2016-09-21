@@ -20,6 +20,7 @@ public:
 private:
     void addReturnOption( const EString & );
     void addSelectOption( const EString & );
+	void addStatusItem( const EString & );
 
     void makeResponse( class Row * );
 
