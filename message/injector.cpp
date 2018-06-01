@@ -393,10 +393,8 @@ void Injector::execute()
             insertDeliveries();
             insertThreadIndexes();
             next();
-            if ( !d->mailboxes.isEmpty() ) {
-                cache();
+            if ( !d->mailboxes.isEmpty() )
                 Mailbox::refreshMailboxes( d->transaction );
-            }
             d->transaction->commit();
             break;
 
@@ -1581,6 +1579,13 @@ void Injector::insertMessages()
 
         // Now we insert the headers and bodies of every MIME bodypart.
 
+        Bodypart *bp;
+        if ( m->hasPGPsignedPart() ) {
+            EString pnr( "raw-pgp-signed" );
+            bp = m->children()->shift(); // avoid starting pns with 2
+            addPartNumber( qp, mid, pnr, bp );
+            ::log( "Injector::insertMessages - added partnumber for raw-signed part: " + pnr, Log::Debug );
+        }
         List<Bodypart>::Iterator bi( m->allBodyparts() );
         while ( bi ) {
             Bodypart * b = bi;
@@ -1610,6 +1615,9 @@ void Injector::insertMessages()
             }
 
             ++bi;
+        }
+        if ( m->hasPGPsignedPart() ) { // reinsert raw part in children list
+            m->children()->prepend( bp );
         }
 
         ++it;
@@ -1946,32 +1954,6 @@ struct MailboxAnnouncement {
     uint uidnext;
     int64 nextmodseq;
 };
-
-
-/*! Inserts this/these message/s into the MessageCache. If the
-    transaction fails, the cache has to be cleared.
-*/
-
-void Injector::cache()
-{
-    List<Injectee>::Iterator it( d->injectables );
-    while ( it ) {
-        Injectee * m = it;
-        ++it;
-        m->setBodiesFetched();
-        m->setBytesAndLinesFetched();
-        m->setAddressesFetched();
-        m->setHeadersFetched();
-        List<Mailbox>::Iterator mi( m->mailboxes() );
-        while ( mi ) {
-            Mailbox * mb = mi;
-            ++mi;
-            uint uid = m->uid( mb );
-
-            MessageCache::insert( mb, uid, m );
-        }
-    }
-}
 
 
 /*! Returns a sensible internaldate for \a m. If

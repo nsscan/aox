@@ -259,8 +259,6 @@ void ImapSession::emitUpdates( Transaction * t )
         }
     }
 
-    emitFlagUpdates( t );
-
     if ( d->uidnext < uidnext() ) {
         if ( !d->existsResponse ) {
             d->existsResponse =
@@ -286,6 +284,8 @@ void ImapSession::emitUpdates( Transaction * t )
         work = true;
     }
 
+    emitFlagUpdates( t );
+
     if ( work )
         d->i->unblockCommands();
     d->i->emitResponses();
@@ -305,6 +305,11 @@ void ImapSession::emitFlagUpdates( Transaction * t )
 
     if ( unannounced().isEmpty() )
         return;
+
+    if ( d->cms == 0 ) {
+        d->cms = d->nms;
+        return;
+    }
 
     List<Command>::Iterator c( d->i->commands() );
     if ( !c || c->state() != Command::Executing )

@@ -27,7 +27,7 @@ public:
           needFirstUnseen( false ), unicode( false ), qresync( false ),
           firstUnseen( 0 ), allFlags( 0 ), updated( 0 ),
           mailbox( 0 ), session( 0 ), permissions( 0 ),
-          cacheFirstUnseen( 0 ), sessionPreloader( 0 ),
+          cacheFirstUnseen( 0 ),
           lastUidValidity( 0 ), lastModSeq( 0 ), firstFetch( 0 )
     {}
 
@@ -44,7 +44,6 @@ public:
     ImapSession * session;
     Permissions * permissions;
     Query * cacheFirstUnseen;
-    SessionPreloader * sessionPreloader;
     uint lastUidValidity;
     uint lastModSeq;
     IntegerSet knownUids;
@@ -229,52 +228,19 @@ void Select::execute()
             d->readOnly = true;
     }
 
+    if ( d->lastModSeq < 1 )
+        d->lastModSeq = d->mailbox->nextModSeq() - 1;
+
     if ( !transaction() )
         setTransaction( new Transaction( this ) );
 
     if ( !::firstUnseenCache )
         ::firstUnseenCache = new SelectData::FirstUnseenCache;
 
-    if ( mailboxGroup() && !d->sessionPreloader ) {
-        d->sessionPreloader = new SessionPreloader( mailboxGroup()->contents(),
-                                                    this );
-        d->sessionPreloader->execute();
-
-        IntegerSet s;
-        List<Mailbox>::Iterator i( mailboxGroup()->contents() );
-        while ( i ) {
-            if ( !::firstUnseenCache->find( i, i->nextModSeq() ) )
-                s.add( i->id() );
-            ++i;
-        }
-        if ( s.count() > 2 ) {
-            d->cacheFirstUnseen
-                = new Query( "select min(uid) as uid, mailbox, "
-                             "max(modseq) as modseq "
-                             "from mailbox_messages mm "
-                             "where mailbox=any($1) and not seen "
-                             "group by mailbox", this );
-            d->cacheFirstUnseen->bind( 1, s );
-            transaction()->enqueue( d->cacheFirstUnseen );
-        }
-    }
-    if ( d->sessionPreloader ) {
-        while ( d->cacheFirstUnseen && d->cacheFirstUnseen->hasResults() ) {
-            Row * r = d->cacheFirstUnseen->nextRow();
-            Mailbox * m = Mailbox::find( r->getInt( "mailbox" ) );
-            ::firstUnseenCache->insert( m, r->getBigint( "modseq" ),
-                                        r->getInt( "uid" ) );
-        }
-        if ( d->cacheFirstUnseen && !d->cacheFirstUnseen->done() )
-            return;
-        if ( !d->sessionPreloader->done() )
-            return;
-    }
-
-
     if ( !d->session ) {
         d->session = new ImapSession( imap(), d->mailbox,
-                                      d->readOnly, d->unicode, d->lastModSeq );
+                                      d->readOnly, d->unicode,
+                                      d->mailbox->nextModSeq() );
         d->session->setPermissions( d->permissions );
         imap()->setSession( d->session );
     }
@@ -290,22 +256,22 @@ void Select::execute()
     else
         d->needFirstUnseen = true;
 
-    if ( d->lastModSeq > 0 && !d->updated ) {
+    if ( d->lastModSeq < d->mailbox->nextModSeq() - 1 && !d->updated ) {
         if ( d->knownUids.isEmpty() ) {
             d->updated = new Query( "select uid from deleted_messages "
-                                    "where mailbox=$1 and modseq >= $2"
+                                    "where mailbox=$1 and modseq > $2"
                                     " union "
                                     "select uid from mailbox_messages "
-                                    "where mailbox=$1 and modseq >= $2",
+                                    "where mailbox=$1 and modseq > $2",
                                     this );
         }
         else {
             d->updated = new Query( "select uid from deleted_messages "
-                                    "where mailbox=$1 and modseq >= $2 "
+                                    "where mailbox=$1 and modseq > $2 "
                                     "and uid=any($3)"
                                     " union "
                                     "select uid from mailbox_messages "
-                                    "where mailbox=$1 and modseq >= $2 "
+                                    "where mailbox=$1 and modseq > $2 "
                                     "and uid=any($3)",
                                     this );
             d->updated->bind( 3, d->knownUids );
@@ -330,8 +296,6 @@ void Select::execute()
          ( d->firstUnseen && !d->firstUnseen->done() ) )
         return;
 
-    if ( d->updated && !d->updated->done() )
-        return;
     if ( d->updated && !d->firstFetch ) {
         IntegerSet s;
         while ( d->updated->hasResults() ) {
@@ -340,7 +304,7 @@ void Select::execute()
         }
         if ( !s.isEmpty() ) {
             d->firstFetch = new Fetch( true, false, true,
-                                       s, d->lastModSeq - 1, imap(),
+                                       s, d->lastModSeq, imap(),
                                        transaction() );
             d->firstFetch->setState( Command::Executing );
             d->session->emitUpdates( transaction() );
